@@ -46,14 +46,15 @@ import org.apache.kerby.kerberos.kerb.type.kdc.EncTgsRepPart;
 import org.apache.kerby.kerberos.kerb.type.ticket.SgtTicket;
 import org.apache.kerby.kerberos.kerb.type.ticket.Ticket;
 import org.apache.kerby.kerberos.kerb.type.ticket.TicketFlags;
+import sun.security.krb5.internal.KDCOptions;
 
 public class KRBUtils {
 
 	private static KrbClient krbClient = new KrbClient((KrbConfig) null);
-	
+
 	/**
 	 * Perform a KRB5 login via GSS-API in order to obtain a TGT for the given principal.
-	 * 
+	 *
 	 * @return A newly acquired TGT for the principal.
 	 * @throws Exception If the login fails.
 	 */
@@ -78,7 +79,7 @@ public class KRBUtils {
 		};
 		Set<Principal> princ = new HashSet<Principal>(1);
 		princ.add(new KerberosPrincipal(principal));
-		
+
 		if (sun.security.krb5.internal.Krb5.DEBUG) {
 			sun.security.krb5.Config config = sun.security.krb5.Config.getInstance();
 			System.out.println("DEBUG: Config isForwardable = " + config.getBooleanValue("libdefaults", "forwardable"));
@@ -86,17 +87,17 @@ public class KRBUtils {
 			System.out.println("DEBUG: KDCOptions isForwardable = " + opts.get(sun.security.krb5.internal.Krb5.TKT_OPTS_FORWARDABLE));
 			System.out.println("DEBUG: Requesting TGT for " + principal);
 		}
-		
+
 		Subject proxySubject = new Subject(false, princ, new HashSet<Object>(), new HashSet<Object>());
 		LoginContext lc = new LoginContext("", proxySubject, null, cfg);
 		lc.login();
-		
+
 		KerberosTicket tgt = findServiceTGT(proxySubject);
-		
+
 		if (sun.security.krb5.internal.Krb5.DEBUG) {
 			System.out.println("DEBUG: TGT (KerberosTicket) isForwardable = " + tgt.isForwardable());
 		}
-		
+
 		return tgt;
 	}
 
@@ -113,22 +114,22 @@ public class KRBUtils {
 			}
 		});
 	}
-	
+
 	/**
 	 * Obtain a Service Ticket (SGT) from a KDC, using the S4U2Self extension.
 	 * The resulting ticket is from the proxy service for the proxy service,
 	 * on behalf of the client principal.
-	 * 
+	 *
 	 * @param clientPrincipal The client principal on whose behalf to request a ticket.
 	 * @param serviceTGT The proxy TGT.
 	 * @return A SGT from the proxy service, for the proxy service.
-	 * @throws Exception 
+	 * @throws Exception
 	 */
 	@SuppressWarnings("restriction")
 	public static SgtTicket obtainImpersonationTicket(String clientPrincipal, KerberosTicket serviceTGT) throws Exception {
 		// Get our own TGT that will be used to make the S4U2Proxy request
 		sun.security.krb5.Credentials serviceTGTCreds = sun.security.jgss.krb5.Krb5Util.ticketToCreds(serviceTGT);
-		
+
 		if (sun.security.krb5.internal.Krb5.DEBUG) {
 			sun.security.krb5.Config config = sun.security.krb5.Config.getInstance();
 			System.out.println("DEBUG: Config isForwardable = " + config.getBooleanValue("libdefaults", "forwardable"));
@@ -138,22 +139,22 @@ public class KRBUtils {
 			System.out.println("DEBUG: TGT (Credentials) isForwardable = " + serviceTGTCreds.isForwardable());
 			System.out.println("DEBUG: Requesting impersonation ticket (S4U2self) for user " + clientPrincipal);
 		}
-		
+
 		// Make a S4U2Self request
 		sun.security.krb5.PrincipalName clientPName = new sun.security.krb5.PrincipalName(clientPrincipal);
 		sun.security.krb5.Credentials creds = sun.security.krb5.Credentials.acquireS4U2selfCreds(clientPName, serviceTGTCreds);
-		
+
 		SgtTicket sgtTicket = convertToTicket(creds,
 				serviceTGTCreds.getClient().getName(),
 				serviceTGTCreds.getClient().getRealmAsString());
 		return sgtTicket;
 	}
-	
+
 	/**
 	 * Request a Service Ticket (SGT) from a KDC, using the S4U2Proxy extension.
 	 * This means that instead of a client's TGT, the service's own credentials are used
 	 * in combination with a SGT from the client to the service.
-	 * 
+	 *
 	 * @param backendServiceName The principal name of the backend service to request an SGT for
 	 * @param proxyServiceTicket The ticket from the client for the proxy service
 	 * @param serviceTGT The proxy TGT
@@ -171,18 +172,25 @@ public class KRBUtils {
 		if (sun.security.krb5.internal.Krb5.DEBUG) {
 			System.out.println("DEBUG: Requesting backend service ticket (S4U2proxy) for service " + backendServiceName);
 		}
-		
+
 		// Make a S4U2Proxy request to get a backend ST
 		sun.security.krb5.KrbTgsReq req = new sun.security.krb5.KrbTgsReq(
+				KDCOptions.with(KDCOptions.CNAME_IN_ADDL_TKT, KDCOptions.FORWARDABLE),
 				serviceTGTCreds,
-				sunTicket,
-				new sun.security.krb5.PrincipalName(backendServiceName));
+				serviceTGTCreds.getClient(),
+				serviceTGTCreds.getClientAlias(),
+				new sun.security.krb5.PrincipalName(backendServiceName),
+				// FIXME I don't know what needs to be passed here
+				null,
+				new sun.security.krb5.internal.Ticket[]{sunTicket},
+				null
+		);
 		sun.security.krb5.Credentials creds = req.sendAndGetCreds();
 
 		SgtTicket sgtTicket = convertToTicket(creds, backendServiceName, proxyServiceTicket.getRealm());
 		return sgtTicket;
 	}
-	
+
 	@SuppressWarnings("restriction")
 	private static SgtTicket convertToTicket(sun.security.krb5.Credentials creds, String sName, String sRealm) throws Exception {
 		EncTgsRepPart rep = new EncTgsRepPart();
@@ -200,29 +208,29 @@ public class KRBUtils {
 			flags = (flags << 1) + (flagArray[i] ? 1 : 0);
 		}
 		rep.setFlags(new TicketFlags(flags));
-		
+
 		EncryptionKey sessionKey = new EncryptionKey();
 		sessionKey.decode(creds.getSessionKey().asn1Encode());
 		rep.setKey(sessionKey);
-		
+
 		Ticket serviceTicket = new Ticket();
 		serviceTicket.decode(creds.getEncoded());
-		
+
 		PrincipalName clientPrincipal = new PrincipalName(creds.getClient().getName());
 		clientPrincipal.setRealm(creds.getClient().getRealmAsString());
-		
+
 		SgtTicket sgtTicket = new SgtTicket(serviceTicket, rep);
 		sgtTicket.setClientPrincipal(clientPrincipal);
-		
+
 		return sgtTicket;
 	}
-	
+
 	public static void persistTicket(SgtTicket ticket, String destinationCCache) throws Exception {
 		File cCacheFile = new File(destinationCCache);
 		if (cCacheFile.exists()) {
 			CredentialCache cCache = new CredentialCache();
 			cCache.load(cCacheFile);
-			
+
 			// Fix: kerby refuses to overwrite tickets in ccache, so if an older one exists, force removal now
 			Credential newCred = new Credential(ticket, ticket.getClientPrincipal());
 			Credential existingCred = cCache.getCredentials().stream()
